@@ -1,7 +1,9 @@
 ---
+layout: post
 title: "The Scaffolding Is the Product: Why Browser Agent Harnesses Matter More Than the Model"
 date: 2026-03-23
 categories: [AI, Agents, Systems]
+tags: [llm, browser-agents, harness-engineering]
 ---
 
 *Why the engineering around the model often matters more than the model itself.*
