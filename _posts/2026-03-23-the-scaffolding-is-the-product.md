@@ -1,306 +1,129 @@
 ---
 layout: post
-title: "The Scaffolding Is the Product: Why Browser Agent Harnesses Matter More Than the Model"
+title: "The Scaffolding Is the Product: How Browser Agent Harnesses Do the Real Work"
 date: 2026-03-23
 categories: [AI, Agents, Systems]
 tags: [llm, browser-agents, harness-engineering]
 ---
 
-*Why the engineering around the model often matters more than the model itself.*
+*Why the engineering around the model matters more than the model itself.*
 
----
+## The Obvious Thing That Doesn't Work
 
-## I. The Obvious Thing That Doesn’t Work
+Watch an LLM try to use a website for the first time. It clicks a loading spinner. It types into a disabled field. It retries both, three times each, then announces it has completed the task.
 
-Watch an LLM try to use a website for the first time. It clicks a loading spinner. It types into a disabled field. It retries both, then confidently announces success.
+These failures have a pattern, and they deserve names. *Phantom clicking*: targeting elements that don't exist or can't be interacted with. *State blindness*: not knowing what changed after an action, so the model can't tell whether a dropdown opened or a form submitted. *Action loops*: retrying the same failed interaction because nothing in the model's input signals that it already tried and failed. These are not failures of reasoning. They are failures of *perception*, and no amount of model scaling fixes them. The problem is not in the model. It is in what the model sees.
 
-These failures have a pattern—and they deserve names:
+A typical webpage contains 5,000 DOM nodes: layout containers, invisible styling elements, tracking pixels, decorative wrappers. Fewer than 40 of them are things a user would ever interact with. Handing this raw tree to a language model is like handing a phone book to someone and asking them to order dinner. The intelligence is not the bottleneck. The interface is.
 
-- **Phantom clicking**: targeting elements that don’t exist or aren’t interactable  
-- **State blindness**: not knowing what changed after an action  
-- **Action loops**: retrying the same failed interaction with no awareness of failure  
+PageAgent, a browser automation agent built as a Chrome extension, takes a different approach. Rather than improving the model, it improves what the model sees, how it acts, and what it's forced to think about between actions. The entire architecture is a *harness*, a structured scaffold that compresses a webpage into something a language model can reason about, then translates the model's decisions back into browser interactions. I want to argue that this harness is not merely an implementation detail. It is, in a meaningful sense, *where the intelligence lives*.
 
-These are **primarily failures of perception**, not reasoning. The model isn’t confused about *what* to do—it’s confused about *what it sees*.
+## Why This Became Possible
 
-A typical webpage contains thousands of DOM nodes. Only a tiny fraction are actually usable. Handing the full DOM to a language model is like handing someone a phone book and asking them to order dinner.
+Browser agents have been attempted for years, but harness engineering of this kind only became viable recently. Early web automation with language models relied on free-form text generation: the model would produce something like "click the blue button on the left," and a brittle parser would try to resolve that to a DOM element. The failure rate was high because the interface between model and browser was *linguistic*, full of ambiguity.
 
-The intelligence is not the bottleneck. The interface is.
+Modern LLMs support structured output: tool-call schemas, typed parameters, constrained generation. When a model can emit `click_element_by_index(37)` as a structured tool call rather than a natural language instruction, the harness can guarantee that every output maps to a valid browser action. The model's execution loop becomes observable, interceptable, and constrainable. PageAgent is built on top of this shift.
 
----
+## Four Layers of Compression
 
-## II. The Shift: From Language to Structured Action
-
-Earlier attempts at browser agents relied on natural language:
-
-> “Click the blue button on the left”
-
-This interface is fundamentally ambiguous.
-
-Modern systems instead use structured tool calls:
+The harness transforms the DOM through four progressive layers, each narrowing what the model sees while preserving what it needs:
 
 ```
-click_element_by_index(37)
+Raw DOM (everything) → Filtered (what matters) → Indexed (what you can do) → Diffed (what just changed)
 ```
 
-This changes everything.
+Each layer solves a named failure mode.
 
-The model’s outputs become:
-- **constrained**
-- **interpretable**
-- **guaranteed to execute**
+### Filtering: solving phantom clicking
 
-This shift—from language to structured action—is what makes reliable agent systems possible.
+PageAgent's first pass strips the DOM to its interactive skeleton. An element survives only if it is visible, within or near the current viewport, and interactive, which includes recognized input types, elements with interactive ARIA roles, click-related event handlers, or cursor styles that signal clickability. Everything else is discarded.
 
----
+The surviving elements are simplified further. A raw HTML button might carry thirty attributes: CSS classes, test identifiers, analytics hooks, inline styles. The harness keeps only attributes that carry semantic meaning for a reasoning agent: `placeholder`, `aria-label`, `type`, `value`, `role`, and state indicators like `checked` and `aria-expanded`. Attributes that repeat the element's visible text or duplicate a parent's attribute are removed. A 5,000-node DOM becomes roughly 30 elements. The compression ratio often exceeds 100:1, *lossy in the right places*, discarding implementation noise while preserving interaction semantics.
 
-## III. The Core Idea: The Harness Is the Product
+Prior work on web agents, notably WebArena [1] and browser-gym environments [2], performs similar DOM preprocessing. PageAgent's contribution is in the specificity of its filtering heuristics. The combination of cursor-style detection, event listener introspection, ARIA role matching, and visibility checks is tuned for real-world (not benchmark) webpages, where the line between interactive and decorative is often blurry.
 
-Systems like PageAgent don’t primarily improve the model.  
-They improve:
+### Indexing: giving the model hands
 
-- what the model **sees**
-- how the model **acts**
-- what the model is **forced to think about**
-
-This surrounding system—the **harness**—is not just glue code.
-
-It is where the system’s *operational intelligence* lives.
-
----
-
-## IV. Four Layers of Compression
-
-The harness transforms a chaotic webpage into something a model can reason about.
-
-Think of it as a pipeline:
+Compression solves perception, but the model still needs a way to act. A human points and clicks. A language model can only produce text. PageAgent bridges this by assigning every surviving element a numeric index:
 
 ```
-Raw DOM → Filtered → Indexed → Diffed → Act
+[33] User form
+  [35] Email input (placeholder: "Email")
+  [36] Password input
+  [37] "Sign In" button
 ```
 
-Each step removes noise and adds structure.
+To click the sign-in button, the model emits `click_element_by_index(37)`. The harness resolves the index to the DOM node and dispatches the event. No CSS selectors, XPaths, or coordinate pairs. Because only real, visible, interactive elements receive indices, the model is *structurally prevented* from phantom clicking. The harness decides what is clickable; the model decides what to click.
 
----
+PageAgent also draws colored numbered overlays on the actual webpage, making the model's perception transparent to the human observer. When the model clicks element 37, the user can look at the screen and see exactly which element that is. This transforms the agent from a black box into something visually auditable in real time.
 
-### 1. Filtering (solving phantom clicking)
+### Diffing: solving state blindness
 
-The first step reduces the DOM to its **interactive skeleton**.
+This is the most interesting layer. After every action, the model needs to answer a fundamental question: *did what I just did work?* It receives a fresh list of elements at each step. Without help, it must mentally diff this list against its memory of the previous one, a task language models perform unreliably as lists grow longer.
 
-An element survives only if it is:
-- visible  
-- within or near the viewport  
-- interactive (inputs, buttons, ARIA roles, event handlers, cursor hints)
-
-Everything else is discarded.
-
-Then attributes are stripped down to only what matters:
-- `placeholder`
-- `aria-label`
-- `role`
-- `value`
-- state indicators (`checked`, `expanded`)
-
-A 5,000-node DOM becomes ~30 usable elements.
-
-This compression is aggressive—but *lossy in the right places*.
-
----
-
-### 2. Indexing (giving the model hands)
-
-Each remaining element is assigned an index:
-
-```
-[35] Email input
-[36] Password input
-[37] "Sign In" button
-```
-
-Instead of describing elements, the model acts directly:
-
-```
-click_element_by_index(37)
-```
-
-This does two things:
-- eliminates ambiguity
-- makes invalid actions impossible
-
-The harness defines what is clickable.  
-The model decides what to click.
-
----
-
-### 3. Diffing (solving state blindness)
-
-After every action, the system marks **what changed**.
-
-New elements are explicitly annotated:
+PageAgent closes this loop with an explicit diff signal. The harness maintains a `WeakMap` keyed by DOM node references. Each time the element tree is rebuilt, every interactive element is checked against this cache. Previously seen elements appear normally. Elements appearing for the first time are marked with an asterisk:
 
 ```
 [40] "Next" button
 *[45] Search results
 *[46] Result: Flight to London
+*[47] Result: Flight to Paris
 ```
 
-The `*` means: *this did not exist before your last action.*
+That asterisk tells the model: these elements did not exist before your last action. The model knows instantly that its search produced results. No mental diffing required.
 
-This is the critical shift:
+The `WeakMap` choice is quietly elegant. When elements leave the DOM, the runtime garbage-collects the references and the cache entries disappear with them. If those elements reappear later as new instances (which is how frameworks like React operate), they are correctly identified as new. The cache is self-cleaning and framework-aware without explicit framework integration. Most browser agent architectures rely on the model's own context window to track changes between steps. PageAgent's explicit diff annotation offloads this cognitive burden to the harness, eliminating state blindness as a failure class at almost no computational cost.
 
-> The model no longer has to infer change—it is told what changed.
+### Reflection: solving action loops
 
-No fragile mental diffing. No guesswork.
+The final layer is not perceptual but cognitive. At every step, PageAgent forces the model to produce a structured reflection *before* acting, consisting of three fields: an **evaluation** of whether the last action succeeded or failed, a **memory** scratchpad for information to carry forward (confirmation numbers, partial results, constraints discovered), and a **next_goal** stating what the model intends to do and why. The schema enforces this. The model cannot bypass it.
 
----
+This directly prevents action loops. A model that must evaluate its previous action before choosing the next one is forced to confront failure rather than blindly retry. The design draws on a well-established finding: models reason more accurately when they externalize their chain of thought before committing to a decision [3]. PageAgent goes further by structuring the reflection into functionally distinct components, so that backward-looking assessment, information management, and forward-looking planning happen as separate, enforced steps.
 
-### 4. Reflection (solving action loops)
+The memory field deserves particular attention. In multi-step web tasks, information encountered early often becomes critical later. A confirmation code. A price seen on page one that must be compared on page three. The memory field provides a curated, self-maintained summary, applying *selection pressure*: the model must decide what to remember, which means it must decide what matters.
 
-Before every action, the model is forced to think:
+## How It Plays Out: A Login Flow
 
-- **Did my last action work?**
-- **What should I remember?**
-- **What is my next goal?**
+Consider what happens when the agent encounters a login form. It sees three indexed elements: an email field, a password field, a sign-in button. It enters an invalid email and clicks submit.
 
-This is enforced structurally—not suggested.
+The next state includes a new element: `*[42] "Invalid email address" error`. The asterisk tells the model something appeared. The forced reflection step requires the model to evaluate: "Form submission failed, a validation error appeared on the email field." Its memory records the constraint. Its next goal becomes: "Correct the email format and resubmit."
 
-Example:
+Without diffing, the model would see the same form and might retry the same input. Without reflection, it would have no structured moment to recognize the failure. With both, it adapts on the first try. The harness didn't make the model smarter. It gave the model the information and the cognitive structure needed to use the intelligence it already has.
 
-```
-evaluation_previous_goal: Form submission failed due to invalid email
-memory: Email field requires valid format
-next_goal: Correct email and resubmit
-```
+## One Action Per Step
 
-This prevents blind retries.
+Most LLM tool-use frameworks allow the model to call multiple tools per turn. PageAgent takes the opposite approach: all available actions are bundled into a single macro-tool, and the model must select exactly one. Click, type, select, scroll, wait, execute JavaScript, ask the user, or declare done. One decision, then observe the result.
 
-It turns the agent from reactive to **self-correcting**.
+This constraint exists because the web is reactive in ways that are difficult to predict. Clicking a button might submit a form, trigger a navigation, open a modal, or do nothing visible for several seconds while an API call completes. The correct next action depends entirely on which outcome occurred, and the model cannot know without observing first. Batching actions would amount to open-loop control in a closed-loop environment. Every action gets a full observe-reflect-act cycle.
 
----
+## The Harness as Co-Pilot
 
-## V. A Concrete Example
+Beyond perception and action, the harness monitors the agent's behavior and intervenes when it detects patterns associated with known failure modes. Three heuristics are currently implemented. When the page URL changes, whether the model intended a navigation or not, the harness injects a system observation preventing the model from interacting with stale element indices. When cumulative wait time exceeds a threshold, it warns the model to stop waiting, addressing the tendency to insert wait actions when uncertain. As the step limit approaches, it injects urgency signals at five remaining steps and again at two.
 
-Consider a simple login flow:
+These are simple pattern-matching rules, not intelligence. But they address failure modes that prompt engineering cannot reliably prevent, because the failures arise from the *dynamics* of interaction rather than from the model's understanding of the task.
 
-1. Model sees:
-   - Email field
-   - Password field
-   - Sign In button
+## What This Doesn't Solve
 
-2. It enters an invalid email and clicks Sign In
+The DOM simplification is lossy, and sometimes loses the wrong things. Elements whose interactivity is implemented entirely through JavaScript (no ARIA roles, no cursor changes, no standard event handlers) may be filtered out. Custom web components with shadow DOMs present similar challenges. The harness embeds assumptions about what matters, and those assumptions can be wrong.
 
-3. The next state includes:
-   ```
-   *[42] "Invalid email address" error
-   ```
+The one-action-per-step discipline is slow. A human fills a login form in one fluid sequence. The agent observes, reflects, and re-scans between each keystroke. The forced reflection compounds this: the model evaluates, memorizes, and plans before clicking an obvious "Next" button. A cognitive tax a human would not pay. The 40-step default limit is a hard boundary, and complex tasks that legitimately need more steps hit this ceiling and fail. Whether the reliability gains from structured reflection justify the overhead on simple actions is an empirical question that depends on the task distribution.
 
-4. The reflection step forces:
-   - recognition of failure  
-   - memory of the constraint  
-   - correction of the plan  
+## The General Principle
 
-Without diffing + reflection, the model often retries blindly.
+The details of PageAgent's harness are specific to browser automation, but the underlying design principle is not. **When deploying a language model as an agent in a complex environment, the engineering of the harness matters at least as much as the choice of model.**
 
-With them, it adapts immediately.
+This has empirical support beyond PageAgent. On benchmarks like WebArena, systems using the same base model but different harness designs show dramatically different success rates [1]. A well-designed harness can make a smaller model outperform a larger one operating with less structure. In cognitive science, the *extended mind thesis* [4] argues that cognition does not stop at the skull, that external tools are, functionally, part of the cognitive system. PageAgent's harness is an extended mind for the language model: the diff tracking is an external perceptual system, the memory field is external working memory, the injected observations are an external attention mechanism.
+
+Every browser agent paper benchmarks the model. Almost none benchmark the harness. Yet the harness is doing most of the work. You don't always need a better model. Sometimes you need a better world for the model to operate in.
 
 ---
 
-## VI. One Action Per Step
+**References**
 
-Most systems allow multiple actions per turn.
+[1] Zhou, S., Xu, F.F., Zhu, H., et al. "WebArena: A Realistic Web Environment for Building Autonomous Agents." *ICLR 2024.*
 
-This system allows exactly one.
+[2] Drouin, A., Gasse, M., Caccia, M., et al. "WorkArena: How Capable are Web Agents at Solving Common Knowledge Work Tasks." *2024.*
 
-Why?
+[3] Wei, J., Wang, X., Schuurmans, D., et al. "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models." *NeurIPS 2022.*
 
-Because the web is a **reactive environment**.
-
-Clicking a button might:
-- navigate
-- open a modal
-- trigger async loading
-- do nothing
-
-You cannot safely plan multiple steps ahead.
-
-Batching actions turns a closed-loop system into an **open-loop controller** in a stochastic environment.
-
-So the agent must:
-
-> act → observe → think → act
-
----
-
-## VII. The Harness as Co-Pilot
-
-The system also injects lightweight guidance:
-
-- Detects navigation → “Page changed to …”
-- Prevents excessive waiting
-- Adds urgency near step limits
-
-These are not intelligent behaviors.
-
-But they shape the agent’s trajectory in ways that look like intelligence.
-
----
-
-## VIII. What This Doesn’t Solve
-
-The approach has real limitations:
-
-- **Lossy filtering** can hide valid interactions  
-- **Custom JS-heavy components** may break detection  
-- **One-step execution is slow**  
-- **Reflection adds overhead**  
-- **Step limits constrain complex tasks**  
-
-The harness embeds assumptions about what matters—and those assumptions can be wrong.
-
----
-
-## IX. The General Principle
-
-This pattern extends beyond browser agents:
-
-> When deploying models in complex environments, the harness matters as much as the model.
-
-Empirically:
-- Systems with identical models perform very differently depending on harness design
-
-Conceptually:
-- This aligns with the extended mind thesis—tools become part of cognition
-
-In this view:
-- Diffing = perception  
-- Memory = working memory  
-- Reflection = reasoning structure  
-
-The model supplies capability.  
-The harness makes that capability usable.
-
----
-
-## X. Closing Thought
-
-We often ask:
-
-> “How do we make models smarter?”
-
-But for agents, a better question is:
-
-> “What kind of world are we giving the model to think in?”
-
-If you want better agents, don’t just build better models.
-
-**Build better worlds for them to operate in.**
-
----
-
-## References
-
-1. Zhou et al., WebArena, ICLR 2024  
-2. Drouin et al., WorkArena, 2024  
-3. Wei et al., Chain-of-Thought Prompting, NeurIPS 2022  
-4. Clark & Chalmers, The Extended Mind, 1998  
-
----
+[4] Clark, A., Chalmers, D. "The Extended Mind." *Analysis, 58(1), 1998.*
