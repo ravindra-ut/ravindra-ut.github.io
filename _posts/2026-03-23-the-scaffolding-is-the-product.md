@@ -16,7 +16,7 @@ These failures have a pattern, and they deserve names. *Phantom clicking*: targe
 
 A typical webpage contains 5,000 DOM nodes: layout containers, invisible styling elements, tracking pixels, decorative wrappers. Fewer than 40 of them are things a user would ever interact with. Handing this raw tree to a language model is like handing a phone book to someone and asking them to order dinner. The intelligence is not the bottleneck. The interface is.
 
-PageAgent, a browser automation agent built as a Chrome extension, takes a different approach. Rather than improving the model, it improves what the model sees, how it acts, and what it's forced to think about between actions. The entire architecture is a *harness*, a structured scaffold that compresses a webpage into something a language model can reason about, then translates the model's decisions back into browser interactions. I want to argue that this harness is not merely an implementation detail. It is, in a meaningful sense, *where the intelligence lives*.
+[PageAgent](https://github.com/alibaba/page-agent), a browser automation agent by Alibaba, takes a different approach. Rather than improving the model, it improves what the model sees, how it acts, and what it's forced to think about between actions. The entire architecture is a *harness*, a structured scaffold that compresses a webpage into something a language model can reason about, then translates the model's decisions back into browser interactions. I want to argue that this harness is not merely an implementation detail. It is, in a meaningful sense, *where the intelligence lives*.
 
 ## Why This Became Possible
 
