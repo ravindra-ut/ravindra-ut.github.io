@@ -4,9 +4,9 @@
 
 ---
 
-## The Problem: GPUs Hate Generating Text
+## The Problem
 
-Large language models generate tokens one at a time. Each token needs a full forward pass: load billions of weights from memory, multiply, sample, repeat. Modern GPUs are compute monsters but memory bottlenecks — an H100 can do 990 TFLOPS but reads memory at only 3.35 TB/s.
+Large language models generate tokens one at a time. Each token needs a full forward pass: load billions of weights from memory, multiply, sample, repeat. Modern GPUs are compute monsters but memory bottlenecks, an H100 can do 990 TFLOPS but reads memory at only 3.35 TB/s.
 
 When generating one token at a time, the GPU loads all parameters, does a tiny multiply for a single token, then loads everything again. This is called being **memory-bandwidth bound**. The GPU spends most of its time waiting for data, not doing math.
 
@@ -14,16 +14,16 @@ When generating one token at a time, the GPU loads all parameters, does a tiny m
 ┌─────────────────────────────────────────────────────────────────────┐
 │              Standard Autoregressive Decoding                       │
 │                                                                     │
-│  ┌─────┐  →  ┌─────┐  →  ┌─────┐  →  ┌─────┐  →  ┌─────┐        │
-│  │ The │     │ cat │     │ sat │     │  on │     │ the │        │
-│  └─────┘     └─────┘     └─────┘     └─────┘     └─────┘        │
-│   ~100ms      ~100ms      ~100ms      ~100ms      ~100ms          │
+│  ┌─────┐  →  ┌─────┐  →  ┌─────┐  →  ┌─────┐  →  ┌─────┐            │
+│  │ The │     │ cat │     │ sat │     │  on │     │ the │            │
+│  └─────┘     └─────┘     └─────┘     └─────┘     └─────┘            │
+│   ~100ms      ~100ms      ~100ms      ~100ms      ~100ms            │
 │                                                                     │
-│  5 tokens = 5 serial forward passes = ~500ms                       │
+│  5 tokens = 5 serial forward passes = ~500ms                        │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-*Each token requires loading all model weights from GPU memory — a full forward pass just for one token.*
+*Each token requires loading all model weights from GPU memory, a full forward pass just for one token.*
 
 ---
 
@@ -41,8 +41,8 @@ This asymmetry is the entire foundation. Use a cheap model to guess, then verify
 
 The algorithm has two players:
 
-- **Draft model** — a small, fast model (~1B parameters) that guesses tokens quickly
-- **Target model** — the large, expensive model (~70B) whose output quality you care about
+- **Draft model** — a small, fast model (~1B parameters) that guesses tokens quickly.
+- **Target model** — the large, expensive model (~70B) whose output quality you care about.
 
 ### Step 1: Draft
 
@@ -79,10 +79,10 @@ Walk through the draft tokens left to right. For each one, compare the draft mod
 │                                                                    │
 │  For each draft token:                                             │
 │                                                                    │
-│  If P_large(token) ≥ P_draft(token)  →  ALWAYS ACCEPT             │
+│  If P_large(token) ≥ P_draft(token)  →  ALWAYS ACCEPT              │
 │     (large model likes it at least as much)                        │
 │                                                                    │
-│  If P_large(token) < P_draft(token)  →  Accept with probability   │
+│  If P_large(token) < P_draft(token)  →  Accept with probability    │
 │     P_large / P_draft, otherwise REJECT and RESAMPLE               │
 │                                                                    │
 │  Formula:  accept_prob = min(1, P_large / P_draft)                 │
@@ -139,7 +139,7 @@ Expected Speedup vs Acceptance Rate (K=5 draft tokens)
   95% acceptance  ██████████████████░░  4.5x
 ```
 
-In practice, teams report **2–3x latency improvements** with well-matched draft models, and up to **4–5x** in favorable conditions. The key variables are:
+In practice, **2–3x latency improvements** with well-matched draft models, and up to **4–5x** in favorable conditions. The key variables are:
 
 - **Acceptance rate** — how often draft matches target (higher = better)
 - **Draft model speed** — faster draft = less overhead per round
