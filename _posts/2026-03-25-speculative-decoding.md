@@ -1,14 +1,18 @@
-# Speculative Decoding: The Free Lunch of LLM Inference
-
-*How a small model and a clever acceptance rule can make large language models 2–5x faster — with zero quality loss.*
-
 ---
+layout: post
+title: "Speculative Decoding: The Free Lunch of LLM Inference"
+date: 2026-03-25
+categories: [AI, Systems, Performance]
+tags: [llm, inference, speculative-decoding, optimization, transformers]
+---
+
+*How a small model and a clever acceptance rule can make large language models 2–5x faster, with zero quality loss.*
 
 ## The Problem
 
-Large language models generate tokens one at a time. Each token needs a full forward pass: load billions of weights from memory, multiply, sample, repeat. Modern GPUs are compute monsters but memory bottlenecks, an H100 can do 990 TFLOPS but reads memory at only 3.35 TB/s.
+Large language models generate tokens one at a time. Each token needs a full forward pass: load billions of weights from memory, multiply, sample, repeat. Modern GPUs are compute monsters but memory bottlenecks. An H100 can do 990 TFLOPS but reads memory at only 3.35 TB/s.
 
-When generating one token at a time, the GPU loads all parameters, does a tiny multiply for a single token, then loads everything again. This is called being **memory-bandwidth bound**. The GPU spends most of its time waiting for data, not doing math.
+When generating one token at a time, the GPU loads all parameters, does a tiny multiply for a single token, then loads everything again. This is **memory-bandwidth bound**: the GPU spends most of its time waiting for data, not doing math.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -23,19 +27,15 @@ When generating one token at a time, the GPU loads all parameters, does a tiny m
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-*Each token requires loading all model weights from GPU memory, a full forward pass just for one token.*
-
----
+*Each token requires loading all model weights from GPU memory — a full forward pass for one token.*
 
 ## The Key Insight: Verification Is Parallel
 
-Here's the observation that makes speculative decoding work: a transformer can **verify** whether it agrees with a sequence of tokens much faster than it can **generate** that sequence from scratch [1].
+A transformer can **verify** whether it agrees with a sequence of tokens much faster than it can **generate** that sequence from scratch [1].
 
-Why? Verification processes all positions in parallel — attention sees everything at once in a single forward pass. But generating those same tokens sequentially requires separate forward passes.
+Why? Verification processes all positions in parallel — attention sees everything at once in a single forward pass. Generation requires a separate forward pass per token.
 
-This asymmetry is the entire foundation. Use a cheap model to guess, then verify all guesses at once with the expensive model.
-
----
+Use a cheap model to guess, then verify all guesses at once with the expensive model.
 
 ## How It Works
 
@@ -89,7 +89,7 @@ Walk through the draft tokens left to right. For each one, compare the draft mod
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-The moment you hit a rejection, stop, take the resampled token from the large model's distribution, and go back to Step 1.
+At the first rejection, stop, take the resampled token from the large model's distribution, and go back to Step 1.
 
 ```
 Results:
@@ -104,11 +104,9 @@ Results:
   vs. standard: ~500ms
 ```
 
----
-
 ## Why It's Lossless
 
-The acceptance scheme isn't arbitrary — it's designed so that the final token distribution is **exactly identical** to what you'd get from running the large model alone. This is provably lossless. You're not trading quality for speed. It's a pure speedup for free [1][2].
+The acceptance rule is designed so that the final token distribution is **exactly identical** to what you'd get from running the large model alone. This is provably lossless [1][2]. You get a pure speedup without trading quality.
 
 ### Acceptance Probability Examples
 
@@ -119,14 +117,11 @@ The acceptance scheme isn't arbitrary — it's designed so that the final token 
 | 80%     | 40%     | 0.50 (50%)              | Accept 50% of the time |
 | 90%     | 20%     | 0.22 (22%)              | Accept 22% of the time |
 
-When the large model is *more* confident than the draft → always accept.
-When the large model is *less* confident → sometimes reject, resample from the large model.
-
----
+When the large model is *more* confident than the draft, always accept. When the large model is *less* confident, sometimes reject and resample from the large model.
 
 ## Speedup in Practice
 
-The speedup depends primarily on the **acceptance rate** — how often the draft model matches the target. For typical English text, a well-matched draft model agrees with the target 70–90% of the time on predictable tokens (articles, prepositions, common continuations) [2].
+The speedup depends on the **acceptance rate** — how often the draft model matches the target. For typical English text, a well-matched draft model agrees with the target 70–90% of the time on predictable tokens (articles, prepositions, common continuations) [2].
 
 ```
 Expected Speedup vs Acceptance Rate (K=5 draft tokens)
@@ -139,29 +134,25 @@ Expected Speedup vs Acceptance Rate (K=5 draft tokens)
   95% acceptance  ██████████████████░░  4.5x
 ```
 
-In practice, **2–3x latency improvements** with well-matched draft models, and up to **4–5x** in favorable conditions. The key variables are:
+In practice, well-matched draft models yield **2–3x latency improvements**, and up to **4–5x** when the draft model closely approximates the target's distribution. The key variables:
 
-- **Acceptance rate** — how often draft matches target (higher = better)
+- **Acceptance rate** — how often the draft matches the target (higher = better)
 - **Draft model speed** — faster draft = less overhead per round
 - **K (speculation length)** — more drafts = higher potential gain, but also higher chance of early rejection
 
----
-
-## Variants and Extensions
-
-The original idea has spawned a family of techniques:
+## Variants
 
 ### Standard Speculative Decoding
 Separate small draft model generates candidates, large model verifies. The original formulation [1][2].
 
 ### Self-Speculative Decoding
-Skip the separate draft model entirely. Use a cheaper version of the target itself — skip layers, use smaller attention patterns, or early-exit from intermediate layers. Simplifies deployment to a single model [3].
+No separate draft model. Use a cheaper version of the target itself — skip layers, use smaller attention patterns, or early-exit from intermediate layers. Reduces deployment to a single model [3].
 
 ### Medusa
-Add multiple lightweight prediction heads to the target model, each guessing a different future position (token +2, +3, +4) simultaneously. No separate draft model needed — the target grows extra "tentacles" for parallel prediction [4].
+Add multiple lightweight prediction heads to the target model, each guessing a different future position (token +2, +3, +4) simultaneously. No separate draft model needed [4].
 
 ### Tree-Based Speculation (SpecInfer)
-Instead of a single chain of draft tokens, generate a **tree** of candidate continuations at each position. Verify the whole tree at once. If one branch is rejected, another might still be accepted — hedging against bad guesses [5].
+Instead of a single chain of draft tokens, generate a **tree** of candidate continuations at each position. Verify the whole tree at once. If one branch is rejected, another might survive [5].
 
 ```
                       ┌── "mat"  ── "."
@@ -176,18 +167,16 @@ Instead of a single chain of draft tokens, generate a **tree** of candidate cont
   If "mat" is rejected, "rug" branch may survive
 ```
 
----
-
 ## Pseudocode
 
-Here's a simplified Python implementation that captures the core algorithm:
+A simplified Python implementation of the core algorithm:
 
 ```python
 import torch
 
 def speculative_decode(
-    target_model,    # Large model (e.g. 70B) — the one we want output from
-    draft_model,     # Small model (e.g. 1B) — the cheap guesser
+    target_model,    # Large model (e.g. 70B)
+    draft_model,     # Small model (e.g. 1B)
     prompt_tokens,   # Initial context token IDs
     K=5,             # Number of draft tokens per round
     max_tokens=100,  # Total tokens to generate
@@ -203,27 +192,22 @@ def speculative_decode(
 
         # ── Step 1: Draft ──────────────────────────────────────
         # Small model generates K candidate tokens autoregressively.
-        # This is fast because the draft model is tiny.
         draft_tokens = []
         draft_probs = []
         draft_input = list(generated)
 
         for _ in range(K):
             logits = draft_model(torch.tensor([draft_input]))
-            p = torch.softmax(logits[:, -1, :], dim=-1)  # distribution over vocab
-            token = torch.multinomial(p, 1).item()        # sample next token
+            p = torch.softmax(logits[:, -1, :], dim=-1)
+            token = torch.multinomial(p, 1).item()
             draft_tokens.append(token)
-            draft_probs.append(p[0, token].item())         # save P_draft(token)
+            draft_probs.append(p[0, token].item())
             draft_input.append(token)
 
         # ── Step 2: Verify ─────────────────────────────────────
         # Feed context + all K draft tokens to the large model in ONE pass.
-        # The large model computes its probability at each position in parallel.
         verify_input = generated + draft_tokens
         logits = target_model(torch.tensor([verify_input]))
-
-        # Extract P_large at each draft position
-        # Position i in draft corresponds to position len(generated)-1+i in the sequence
         target_probs_all = torch.softmax(logits[:, :, :], dim=-1)
 
         # ── Step 3: Accept or Reject ──────────────────────────
@@ -232,34 +216,30 @@ def speculative_decode(
         n_accepted = 0
 
         for i in range(K):
-            pos = len(generated) - 1 + i  # position in the full sequence
+            pos = len(generated) - 1 + i
             p_large = target_probs_all[0, pos, draft_tokens[i]].item()
             p_draft = draft_probs[i]
 
-            # The core acceptance rule
             accept_prob = min(1.0, p_large / p_draft)
 
             if torch.rand(1).item() < accept_prob:
-                # ✓ Accepted — this token matches the target distribution
                 generated.append(draft_tokens[i])
                 n_accepted += 1
             else:
-                # ✗ Rejected — resample from adjusted distribution:
+                # Resample from adjusted distribution:
                 # P_adjusted(x) = max(0, P_large(x) - P_draft(x))
-                # This correction ensures exact target distribution
                 p_target = target_probs_all[0, pos, :]
                 p_draft_full = torch.softmax(
                     draft_model(torch.tensor([generated + draft_tokens[:i]]))[:, -1, :],
                     dim=-1
                 )[0]
                 adjusted = torch.clamp(p_target - p_draft_full, min=0)
-                adjusted = adjusted / adjusted.sum()  # normalize
+                adjusted = adjusted / adjusted.sum()
                 new_token = torch.multinomial(adjusted, 1).item()
                 generated.append(new_token)
-                break  # stop checking further drafts
+                break
 
-        # If ALL K tokens accepted, we also get a bonus token
-        # from the target model's prediction at position K
+        # If ALL K tokens accepted, bonus token from target model
         if n_accepted == K:
             bonus_pos = len(generated) - 1
             p_bonus = target_probs_all[0, bonus_pos, :]
@@ -280,30 +260,11 @@ def speculative_decode(
 # print(tokenizer.decode(output))
 ```
 
-**Key things to notice in the code:**
-
-- **Step 1** is the only sequential part — the draft model generates K tokens one by one, but it's tiny so this is fast (~30ms).
-- **Step 2** is a single forward pass through the large model with all K candidates. This is where the parallelism wins — one pass costs ~100ms regardless of K.
-- **Step 3** walks left to right with the `min(1, P_large / P_draft)` rule. The `adjusted` distribution on rejection ensures mathematical equivalence to the target model.
-- **Bonus token**: if all K drafts are accepted, the target model's output at position K gives us one extra token for free.
-
----
-
 ## Why This Matters
 
-Training a frontier model is a one-time (massive) cost. Inference — running that model for every query, every API call, every day — is the recurring bill that dwarfs training over time.
+Training a frontier model is a one-time (massive) cost. Inference — running that model for every query, every API call, every day — is the recurring cost that dwarfs training over time.
 
-> "Training is the flex. Inference is the forever bill."
-
-A 3x speedup on inference means 3x more users on the same hardware, or GPU costs cut by two-thirds. Combined with quantization techniques (like compressing KV-cache precision) and better batching strategies, speculative decoding is part of a wave of optimizations making it possible to run serious LLM workloads on surprisingly modest hardware.
-
-The race to train the biggest model gets the headlines. The race to make inference cheap and fast? That's what determines whether these models actually reach everyone.
-
----
-
-## TL;DR
-
-Speculative decoding uses a small, fast model to guess several tokens ahead, then verifies all guesses at once with the large model. Accepted guesses are free tokens. Rejected guesses get resampled. The output is mathematically identical to running the large model alone — you just get there faster. Typical speedup: **2–5x, zero quality loss**.
+A 3x speedup on inference means 3x more users on the same hardware, or GPU costs cut by two-thirds. Combined with quantization and better batching strategies, speculative decoding is part of a set of optimizations making it practical to run large models on less hardware. The race to make inference cheap and fast determines whether these models reach broad deployment.
 
 ---
 
