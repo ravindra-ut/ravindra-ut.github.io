@@ -192,6 +192,32 @@ axes[0].hist(rejected_r, bins=40, alpha=0.6, label="Rejected", color="tab:red")
 
 That overlap matters. A noisy reward model doesn't just fail to help the RL policy; it misleads it. The policy finds and exploits every systematic error. Length bias is one. Confident-sounding nonsense scoring well is another.
 
+## The Full Picture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                  Reward Model Training                   │
+│                                                          │
+│  ┌──────────┐   ┌──────────────┐   ┌───────────────┐     │
+│  │ Chosen   │──→│              │──→│ r_chosen      │     │
+│  │ Response │   │  DistilGPT-2 │   │               │     │
+│  └──────────┘   │  + Linear    │   │ Bradley-Terry │     │
+│  ┌──────────┐   │    Head      │   │ Loss          │     │
+│  │ Rejected │──→│              │──→│ r_rejected    │     │
+│  │ Response │   └──────────────┘   └───────┬───────┘     │
+│  └──────────┘                              │             │
+│                                            ▼             │
+│                  L = -log σ(r_chosen - r_rejected)       │
+│                                                          │
+│  The model never sees target scores.                     │
+│  It only learns: this one is better than that one.       │
+└──────────────────────────────────────────────────────────┘
+```
+
+The reward model compresses all of human judgment into a single number. Every shortcut it learns, the RL policy exploits. Every preference it misreads, the RL policy amplifies.
+
+Building a good reward model is harder than the RL step that follows.
+
 ## Where This Fits in the RLHF Pipeline
 
 In the [last post]({% post_url 2026-03-27-reinforce-for-llms %}), the reward function was a hard-coded check. In the full RLHF pipeline, this reward model replaces that check.
@@ -226,32 +252,6 @@ The RL algorithm can only be as good as the signal it optimizes.
 **Reward hacking.** Once the RL policy starts optimizing against the reward model, it finds responses that score high but aren't actually good. A model that outputs confident, detailed, plausible-sounding wrong answers, because the reward model learned that confidence and detail correlate with preference. The reward model is a proxy for human judgment, and the policy will exploit every crack in that proxy.
 
 **DPO.** Direct Preference Optimization folds preference learning directly into the policy update, skipping the reward model entirely. Instead of training a separate scoring function and then optimizing against it, DPO uses the preference pairs to update the policy in a single step. No separate scoring function means no reward hacking loop.
-
-## The Full Picture
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                  Reward Model Training                   │
-│                                                          │
-│  ┌──────────┐   ┌──────────────┐   ┌───────────────┐     │
-│  │ Chosen   │──→│              │──→│ r_chosen      │     │
-│  │ Response │   │  DistilGPT-2 │   │               │     │
-│  └──────────┘   │  + Linear    │   │ Bradley-Terry │     │
-│  ┌──────────┐   │    Head      │   │ Loss          │     │
-│  │ Rejected │──→│              │──→│ r_rejected    │     │
-│  │ Response │   └──────────────┘   └───────┬───────┘     │
-│  └──────────┘                              │             │
-│                                            ▼             │
-│                  L = -log σ(r_chosen - r_rejected)       │
-│                                                          │
-│  The model never sees target scores.                     │
-│  It only learns: this one is better than that one.       │
-└──────────────────────────────────────────────────────────┘
-```
-
-The reward model compresses all of human judgment into a single number. Every shortcut it learns, the RL policy exploits. Every preference it misreads, the RL policy amplifies.
-
-Building a good reward model is harder than the RL step that follows.
 
 ---
 
